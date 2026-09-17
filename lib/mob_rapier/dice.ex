@@ -119,9 +119,13 @@ defmodule MobRapier.Dice do
   @inv_phi 1.0 / ((1.0 + :math.sqrt(5.0)) / 2.0)
 
   @doc """
-  20 vertices of a regular dodecahedron centred at the origin. Feed to
-  `MobRapier.Physics.add_convex_hull/6` with a `scale` to build a d12
-  collider.
+  20 vertices of a regular dodecahedron centred at the origin. These
+  are the face-centre directions of `icosahedron_vertices/0` (dual
+  relationship), so `d20_face_normals/0` uses them as face outward
+  normals when decoding an icosahedron's settled orientation.
+
+  Feed to `MobRapier.Physics.add_convex_hull/6` with a `scale` to
+  build a d12 collider.
   """
   @spec dodecahedron_vertices() :: [{float(), float(), float()}]
   def dodecahedron_vertices do
@@ -133,16 +137,23 @@ defmodule MobRapier.Dice do
       for sx <- [1.0, -1.0], sy <- [1.0, -1.0], sz <- [1.0, -1.0],
           do: {sx, sy, sz}
 
+    # The three non-cube families. Which coordinate carries the "big"
+    # value (phi) vs the "small" value (inv_phi) is determined by the
+    # icosahedron's actual face centroids — flip either the pattern
+    # here or the pattern in icosahedron_vertices and the duality
+    # breaks (icos face centres no longer match dodec vertex
+    # positions), which surfaces as numerals landing on the wrong
+    # face in a rendered d20 (rapier_lab-nlf).
     yz =
-      for sy <- [inv_phi, -inv_phi], sz <- [phi, -phi],
+      for sy <- [phi, -phi], sz <- [inv_phi, -inv_phi],
           do: {0.0, sy, sz}
 
     xy =
-      for sx <- [inv_phi, -inv_phi], sy <- [phi, -phi],
+      for sx <- [phi, -phi], sy <- [inv_phi, -inv_phi],
           do: {sx, sy, 0.0}
 
     xz =
-      for sx <- [phi, -phi], sz <- [inv_phi, -inv_phi],
+      for sx <- [inv_phi, -inv_phi], sz <- [phi, -phi],
           do: {sx, 0.0, sz}
 
     cube ++ yz ++ xy ++ xz
@@ -200,43 +211,77 @@ defmodule MobRapier.Dice do
 
   # ── Face normals ──────────────────────────────────────────────────────
 
-  # Icosahedron face normals = normalized dodecahedron vertices (dual).
-  defp d20_face_normals do
+  @doc """
+  20 unit face-normals of the d20, in the numbering order
+  `face_up_d20/1` uses (index 1..20). Face i's numeral goes on the
+  face pointing along `Enum.at(d20_face_normals(), i - 1)`.
+
+  Public so a mesh generator (e.g. blender export scripts) can build
+  a die whose numeral positions match the physics face-up decode
+  without redoing the geometry.
+  """
+  @spec d20_face_normals() :: [{float(), float(), float()}]
+  def d20_face_normals do
     dodecahedron_vertices()
     |> Enum.map(&normalize/1)
   end
 
-  # Dodecahedron face normals = normalized icosahedron vertices (dual).
-  defp d12_face_normals do
+  @doc """
+  12 unit face-normals of the d12 in `face_up_d12/1`'s numbering order.
+  See `d20_face_normals/0`.
+  """
+  @spec d12_face_normals() :: [{float(), float(), float()}]
+  def d12_face_normals do
     icosahedron_vertices()
     |> Enum.map(&normalize/1)
   end
 
-  # Pentagonal trapezohedron face normals: 10 unit vectors, 5 tilted up
-  # and 5 tilted down, offset by 36°. This is the dual (pentagonal
-  # antiprism vertex set) — the geometrically-exact face-normals for a
-  # trapezohedron of these proportions. Face 1 is the +y-most top kite;
-  # numbering ascends around the ring, then continues with the bottom kites.
-  defp d10_face_normals do
-    # tilt from y-axis chosen so face-normals form a pentagonal antiprism
-    # inscribed in the unit sphere at y = ±cos(tilt).
-    tilt = :math.pi() * 60.0 / 180.0
-    y_top = :math.cos(tilt)
-    r = :math.sin(tilt)
+  @doc """
+  10 unit face-normals of the d10 (pentagonal trapezohedron) in
+  `face_up_d10/1`'s numbering order. Faces 1..5 are the top kites,
+  faces 6..10 are the bottom kites.
+
+  Computed as the unit-direction of each kite's centroid — the average
+  of its 4 vertices from `pentagonal_trapezohedron_vertices/0`. This
+  keeps the physics face-up decode aligned with mesh numeral placement
+  even though the specific vertex placement in that function produces
+  non-planar kites (a "true" trapezohedron would need a specific
+  apex-height / equatorial-radius ratio for planarity; ours does not).
+
+  See `d20_face_normals/0` for why this is public.
+  """
+  @spec d10_face_normals() :: [{float(), float(), float()}]
+  def d10_face_normals do
+    v = pentagonal_trapezohedron_vertices()
+    apex_top = Enum.at(v, 0)
+    apex_bot = Enum.at(v, 1)
+    upper = Enum.slice(v, 2, 5)
+    lower = Enum.slice(v, 7, 5)
 
     top =
       for k <- 0..4 do
-        theta = k * 2.0 * :math.pi() / 5.0
-        {r * :math.cos(theta), y_top, r * :math.sin(theta)}
+        [apex_top, Enum.at(upper, k), Enum.at(lower, k), Enum.at(upper, rem(k + 1, 5))]
+        |> centroid()
+        |> normalize()
       end
 
     bottom =
       for k <- 0..4 do
-        theta = (k + 0.5) * 2.0 * :math.pi() / 5.0
-        {r * :math.cos(theta), -y_top, r * :math.sin(theta)}
+        [apex_bot, Enum.at(lower, k), Enum.at(upper, rem(k + 1, 5)), Enum.at(lower, rem(k + 1, 5))]
+        |> centroid()
+        |> normalize()
       end
 
     top ++ bottom
+  end
+
+  defp centroid(vs) do
+    {sx, sy, sz} = Enum.reduce(vs, {0.0, 0.0, 0.0}, fn {x, y, z}, {ax, ay, az} ->
+      {ax + x, ay + y, az + z}
+    end)
+
+    n = length(vs)
+    {sx / n, sy / n, sz / n}
   end
 
   defp normalize({x, y, z}) do
