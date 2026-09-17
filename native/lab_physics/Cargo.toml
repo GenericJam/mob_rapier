@@ -1,0 +1,28 @@
+[package]
+name = "lab_physics"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "lab_physics"
+path = "src/lib.rs"
+# cdylib: host-BEAM development (mix compile builds a .dylib/.so for
+#   Rustler's default LOAD path).
+# staticlib: device (mob_dev links the .a into the app binary via the
+#   static-NIF driver_tab — see MobDev.NativeBuild).
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# 0.38+ has the Bionic dlsym fix that makes nif_init actually work on
+# Android (memory: project_mob_rustler_android_dlsym).
+rustler = "0.38"
+rapier3d = "0.22"
+# Contact-event channel wiring (bead rapier_lab-bvr). rapier3d already
+# depends on crossbeam 0.8; taking the same version so
+# ChannelEventCollector's Sender types line up.
+crossbeam = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
