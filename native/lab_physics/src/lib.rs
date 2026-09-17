@@ -91,6 +91,13 @@ fn build_dynamic_rb(x: f32, y: f32, z: f32) -> RigidBody {
         .translation(vector![x, y, z])
         .linear_damping(LINEAR_DAMPING)
         .angular_damping(ANGULAR_DAMPING)
+        // Rapier's recommended fix for tunneling — a mid-collision peak
+        // impulse can send a 45 g shell past a 5 cm wall in a single
+        // 33 ms step without CCD. Rapier docs, "Continuous
+        // Collision-Detection":
+        // https://rapier.rs/docs/user_guides/rust/rigid_bodies#continuous-collision-detection
+        // Cheap at our body counts (<= a few dozen dynamic bodies).
+        .ccd_enabled(true)
         .build();
     // Tabletop-scale sleep thresholds — rapier's defaults are for
     // room-scale bodies; see SLEEP_* constants above for why we override.
