@@ -141,6 +141,7 @@ defmodule MobRapier.DiceTest do
     test "flipping 180° about X picks a different face" do
       f_id = Dice.face_up_d20({0.0, 0.0, 0.0, 1.0})
       f_flip = Dice.face_up_d20({1.0, 0.0, 0.0, 0.0})
+
       refute f_id == f_flip,
              "a 180° X-flip should surface the opposite face"
     end

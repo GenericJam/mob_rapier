@@ -9,6 +9,72 @@ use rapier3d::prelude::*;
 use rustler::{Atom, Encoder, Env, NifResult, ResourceArc, Term};
 use std::sync::Mutex;
 
+// ── Physics tuning ──────────────────────────────────────────────────────
+//
+// Rapier defaults are geared for large-scale physics: 0 damping, 1 kg/m³
+// collider density (a shell-sized oblate weighs 45 mg at that density
+// and jitters forever under numerical noise). We're modelling
+// centimetre-scale dice and cowries, so pick values that match real
+// plastic dice / shells and let rapier's built-in auto-sleep bring
+// bodies to rest.
+
+/// Density used for every dynamic collider — near the density of ABS
+/// plastic (~1050 kg/m³), which puts a d6-sized cuboid at ~1-4 g and
+/// an oblate cowrie at ~50 mg. Real-scale mass means damping actually
+/// bites and sleep thresholds fire.
+const COLLIDER_DENSITY: f32 = 1000.0;
+
+/// Linear damping — bleeds off residual translational motion. 0.5 is
+/// "moderate air resistance"; a body loses ~40% of its linear speed
+/// per second while otherwise free.
+const LINEAR_DAMPING: f32 = 0.5;
+
+/// Angular damping — dice tumble but shouldn't spin forever. 2.0 kills
+/// rotational jitter within a second, which is what makes the
+/// settled-state detector actually converge.
+const ANGULAR_DAMPING: f32 = 2.0;
+
+/// Collider friction — plastic-on-wood-ish; enough that a resting
+/// shell doesn't drift under gentle contact force from a neighbour.
+const COLLIDER_FRICTION: f32 = 0.7;
+
+/// Collider restitution — a small dice bounce, not a superball. 0.15
+/// lets the shake read as a shake without keeping the pile alive
+/// through repeated contact-driven energy retention.
+const COLLIDER_RESTITUTION: f32 = 0.15;
+
+/// Build a dynamic rigid body pre-configured for our
+/// centimetre-scale demos: translation set, damping applied so
+/// rapier's auto-sleep can catch it once the shake is over.
+fn build_dynamic_rb(x: f32, y: f32, z: f32) -> RigidBody {
+    RigidBodyBuilder::dynamic()
+        .translation(vector![x, y, z])
+        .linear_damping(LINEAR_DAMPING)
+        .angular_damping(ANGULAR_DAMPING)
+        .build()
+}
+
+/// Common tuning for every dynamic collider — density, friction,
+/// restitution, and contact-event wiring.
+fn tune_collider(builder: ColliderBuilder) -> ColliderBuilder {
+    builder
+        .density(COLLIDER_DENSITY)
+        .friction(COLLIDER_FRICTION)
+        .restitution(COLLIDER_RESTITUTION)
+        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
+        .contact_force_event_threshold(0.0)
+}
+
+/// Static colliders (walls, ground) still get friction and restitution
+/// but no density (mass is irrelevant for fixed bodies).
+fn tune_static_collider(builder: ColliderBuilder) -> ColliderBuilder {
+    builder
+        .friction(COLLIDER_FRICTION)
+        .restitution(COLLIDER_RESTITUTION)
+        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
+        .contact_force_event_threshold(0.0)
+}
+
 mod atoms {
     rustler::atoms! { ok, started, stopped }
 }
@@ -139,7 +205,7 @@ fn world_new() -> ResourceArc<WorldRes> {
     let mut world = World::new();
 
     // Static ground (100 x 0.2 x 100 m, top surface at y = 0).
-    let ground = ColliderBuilder::cuboid(50.0, 0.1, 50.0)
+    let ground = tune_static_collider(ColliderBuilder::cuboid(50.0, 0.1, 50.0))
         .translation(vector![0.0, -0.1, 0.0])
         .build();
     world.colliders.insert(ground);
@@ -161,18 +227,11 @@ fn add_ball(res: ResourceArc<WorldRes>, x: f32, y: f32, z: f32, radius: f32) -> 
         ..
     } = &mut *world;
 
-    let rb = RigidBodyBuilder::dynamic()
-        .translation(vector![x, y, z])
-        .build();
-    let handle = rigid_bodies.insert(rb);
+    let handle = rigid_bodies.insert(build_dynamic_rb(x, y, z));
     // Bead rapier_lab-bvr: emit collision + contact-force events so
     // agents can assert on 'ball landed' / 'first bounce' without diffing
     // transforms.
-    let collider = ColliderBuilder::ball(radius)
-        .restitution(0.4)
-        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
-        .contact_force_event_threshold(0.0)
-        .build();
+    let collider = tune_collider(ColliderBuilder::ball(radius)).build();
     colliders.insert_with_parent(collider, handle, rigid_bodies);
     bodies.push(handle);
     (bodies.len() - 1) as u32
@@ -202,11 +261,7 @@ fn add_static_cuboid(
         .translation(vector![x, y, z])
         .build();
     let handle = rigid_bodies.insert(rb);
-    let collider = ColliderBuilder::cuboid(hx, hy, hz)
-        .restitution(0.4)
-        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
-        .contact_force_event_threshold(0.0)
-        .build();
+    let collider = tune_static_collider(ColliderBuilder::cuboid(hx, hy, hz)).build();
     colliders.insert_with_parent(collider, handle, rigid_bodies);
     bodies.push(handle);
     (bodies.len() - 1) as u32
@@ -265,17 +320,13 @@ fn add_oblate(
         ..
     } = &mut *world;
 
-    let rb = RigidBodyBuilder::dynamic()
-        .translation(vector![x, y, z])
-        .build();
-    let handle = rigid_bodies.insert(rb);
+    let handle = rigid_bodies.insert(build_dynamic_rb(x, y, z));
     let points = ellipsoid_hull_points(equatorial_r, polar_r, equatorial_r);
-    let collider = ColliderBuilder::convex_hull(&points)
-        .expect("ellipsoid_hull_points produces a valid convex hull")
-        .restitution(0.4)
-        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
-        .contact_force_event_threshold(0.0)
-        .build();
+    let collider = tune_collider(
+        ColliderBuilder::convex_hull(&points)
+            .expect("ellipsoid_hull_points produces a valid convex hull"),
+    )
+    .build();
     colliders.insert_with_parent(collider, handle, rigid_bodies);
     bodies.push(handle);
     (bodies.len() - 1) as u32
@@ -314,16 +365,12 @@ fn add_convex_hull(
         .map(|(px, py, pz)| point![px * scale, py * scale, pz * scale])
         .collect();
 
-    let rb = RigidBodyBuilder::dynamic()
-        .translation(vector![x, y, z])
-        .build();
-    let handle = rigid_bodies.insert(rb);
-    let collider = ColliderBuilder::convex_hull(&scaled)
-        .expect("caller must pass a non-degenerate point cloud")
-        .restitution(0.4)
-        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
-        .contact_force_event_threshold(0.0)
-        .build();
+    let handle = rigid_bodies.insert(build_dynamic_rb(x, y, z));
+    let collider = tune_collider(
+        ColliderBuilder::convex_hull(&scaled)
+            .expect("caller must pass a non-degenerate point cloud"),
+    )
+    .build();
     colliders.insert_with_parent(collider, handle, rigid_bodies);
     bodies.push(handle);
     (bodies.len() - 1) as u32
@@ -348,16 +395,9 @@ fn add_cuboid(
         ..
     } = &mut *world;
 
-    let rb = RigidBodyBuilder::dynamic()
-        .translation(vector![x, y, z])
-        .build();
-    let handle = rigid_bodies.insert(rb);
+    let handle = rigid_bodies.insert(build_dynamic_rb(x, y, z));
     // Same event-active config as add_ball (bead rapier_lab-bvr).
-    let collider = ColliderBuilder::cuboid(hx, hy, hz)
-        .restitution(0.4)
-        .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
-        .contact_force_event_threshold(0.0)
-        .build();
+    let collider = tune_collider(ColliderBuilder::cuboid(hx, hy, hz)).build();
     colliders.insert_with_parent(collider, handle, rigid_bodies);
     bodies.push(handle);
     (bodies.len() - 1) as u32

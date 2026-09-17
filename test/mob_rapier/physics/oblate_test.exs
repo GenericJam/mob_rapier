@@ -30,7 +30,7 @@ defmodule MobRapier.Physics.OblateTest do
     assert first_started != nil, "expected a :started collision within 180 steps"
     {a, b, :started} = first_started
     assert @ground in [a, b]
-    assert (if a == @ground, do: b, else: a) == body
+    assert if(a == @ground, do: b, else: a) == body
   end
 
   test "an oblate dropped tilted settles with the polar axis vertical" do

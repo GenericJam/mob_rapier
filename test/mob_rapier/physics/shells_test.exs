@@ -20,7 +20,12 @@ defmodule MobRapier.Physics.ShellsTest do
 
     on_exit(fn -> Physics.destroy_world(@world) end)
 
-    for {x, z} <- [{@arena_half, 0.0}, {-@arena_half, 0.0}, {0.0, @arena_half}, {0.0, -@arena_half}] do
+    for {x, z} <- [
+          {@arena_half, 0.0},
+          {-@arena_half, 0.0},
+          {0.0, @arena_half},
+          {0.0, -@arena_half}
+        ] do
       Physics.add_static_cuboid_in(@world, x, 0.05, z, 0.02, 0.05, @arena_half)
     end
 
@@ -83,6 +88,7 @@ defmodule MobRapier.Physics.ShellsTest do
       end
 
     assert length(ids) == @count
+
     assert ids == Enum.to_list(hd(ids)..(hd(ids) + @count - 1)),
            "shell body ids should be consecutive; got #{inspect(ids)}"
   end

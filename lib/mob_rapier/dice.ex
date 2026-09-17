@@ -134,8 +134,7 @@ defmodule MobRapier.Dice do
 
     # 8 cube corners.
     cube =
-      for sx <- [1.0, -1.0], sy <- [1.0, -1.0], sz <- [1.0, -1.0],
-          do: {sx, sy, sz}
+      for sx <- [1.0, -1.0], sy <- [1.0, -1.0], sz <- [1.0, -1.0], do: {sx, sy, sz}
 
     # The three non-cube families. Which coordinate carries the "big"
     # value (phi) vs the "small" value (inv_phi) is determined by the
@@ -145,16 +144,13 @@ defmodule MobRapier.Dice do
     # positions), which surfaces as numerals landing on the wrong
     # face in a rendered d20 (rapier_lab-nlf).
     yz =
-      for sy <- [phi, -phi], sz <- [inv_phi, -inv_phi],
-          do: {0.0, sy, sz}
+      for sy <- [phi, -phi], sz <- [inv_phi, -inv_phi], do: {0.0, sy, sz}
 
     xy =
-      for sx <- [phi, -phi], sy <- [inv_phi, -inv_phi],
-          do: {sx, sy, 0.0}
+      for sx <- [phi, -phi], sy <- [inv_phi, -inv_phi], do: {sx, sy, 0.0}
 
     xz =
-      for sx <- [inv_phi, -inv_phi], sz <- [phi, -phi],
-          do: {sx, 0.0, sz}
+      for sx <- [inv_phi, -inv_phi], sz <- [phi, -phi], do: {sx, 0.0, sz}
 
     cube ++ yz ++ xy ++ xz
   end
@@ -169,16 +165,13 @@ defmodule MobRapier.Dice do
     phi = @phi
 
     yz =
-      for sy <- [1.0, -1.0], sz <- [phi, -phi],
-          do: {0.0, sy, sz}
+      for sy <- [1.0, -1.0], sz <- [phi, -phi], do: {0.0, sy, sz}
 
     xy =
-      for sx <- [1.0, -1.0], sy <- [phi, -phi],
-          do: {sx, sy, 0.0}
+      for sx <- [1.0, -1.0], sy <- [phi, -phi], do: {sx, sy, 0.0}
 
     xz =
-      for sx <- [phi, -phi], sz <- [1.0, -1.0],
-          do: {sx, 0.0, sz}
+      for sx <- [phi, -phi], sz <- [1.0, -1.0], do: {sx, 0.0, sz}
 
     yz ++ xy ++ xz
   end
@@ -267,7 +260,12 @@ defmodule MobRapier.Dice do
 
     bottom =
       for k <- 0..4 do
-        [apex_bot, Enum.at(lower, k), Enum.at(upper, rem(k + 1, 5)), Enum.at(lower, rem(k + 1, 5))]
+        [
+          apex_bot,
+          Enum.at(lower, k),
+          Enum.at(upper, rem(k + 1, 5)),
+          Enum.at(lower, rem(k + 1, 5))
+        ]
         |> centroid()
         |> normalize()
       end
@@ -276,9 +274,10 @@ defmodule MobRapier.Dice do
   end
 
   defp centroid(vs) do
-    {sx, sy, sz} = Enum.reduce(vs, {0.0, 0.0, 0.0}, fn {x, y, z}, {ax, ay, az} ->
-      {ax + x, ay + y, az + z}
-    end)
+    {sx, sy, sz} =
+      Enum.reduce(vs, {0.0, 0.0, 0.0}, fn {x, y, z}, {ax, ay, az} ->
+        {ax + x, ay + y, az + z}
+      end)
 
     n = length(vs)
     {sx / n, sy / n, sz / n}

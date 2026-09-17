@@ -38,7 +38,8 @@ defmodule MobRapier.Physics do
   @type body_id :: non_neg_integer()
 
   @typedoc "One body's transform: `{id, {x, y, z}, {qx, qy, qz, qw}}`."
-  @type transform :: {body_id(), {float(), float(), float()}, {float(), float(), float(), float()}}
+  @type transform ::
+          {body_id(), {float(), float(), float()}, {float(), float(), float(), float()}}
 
   @doc "Returns `:ok` when the NIF is loaded."
   @spec ping() :: :ok
