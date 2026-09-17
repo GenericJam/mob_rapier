@@ -33,9 +33,8 @@ defmodule MobRapier.MixProject do
       # cross-compile it (mob_dev's static_nifs pipeline reads from
       # deps/mob_rapier/native/lab_physics). Everything the compile step
       # reads at COMPILE time lives here — no repo-root dotfiles.
-      files:
-        ~w(lib native/lab_physics/Cargo.toml native/lab_physics/src
-           mix.exs README* CHANGELOG* LICENSE)
+      files: ~w(lib native/lab_physics/Cargo.toml native/lab_physics/src
+           guides mix.exs README* CHANGELOG* LICENSE)
     ]
   end
 
@@ -46,6 +45,8 @@ defmodule MobRapier.MixProject do
       source_url_pattern: "#{@source_url}/blob/master/%{path}#L%{line}",
       extras: [
         "README.md": [title: "mob_rapier"],
+        "guides/physics_tuning.md": [title: "Physics tuning"],
+        "guides/dice.md": [title: "Dice and shell face-up"],
         "CHANGELOG.md": [title: "Changelog"]
       ]
     ]
