@@ -131,6 +131,75 @@ defmodule MobRapier.Physics do
   @spec transforms(world()) :: [transform()]
   def transforms(_world), do: :erlang.nif_error(:nif_not_loaded)
 
+  defmodule BodyState do
+    @moduledoc """
+    Full per-body telemetry for debugging + settle detection. The NIF
+    returns a list of these; every field is derived on the Rust side from
+    rapier's own body state, so the values match what the solver sees.
+
+    Fields:
+
+      * `id` — body index (u32), the same one `transforms/1` and the
+        contacts NIFs use.
+      * `pos` — `{x, y, z}` centre position in world coordinates, metres.
+      * `quat` — `{qx, qy, qz, qw}` orientation quaternion.
+      * `linvel` — `{lvx, lvy, lvz}` linear velocity, m/s.
+      * `angvel` — `{avx, avy, avz}` angular velocity, rad/s.
+      * `speed` — `|linvel|`, m/s.
+      * `ang_speed` — `|angvel|`, rad/s.
+      * `euler` — `{yaw, pitch, roll}` intrinsic Z-Y-X Tait-Bryan
+        angles, radians. Yaw about world +Y, pitch about world +Z after
+        yaw, roll about world +X after pitch. Useful for "what does this
+        die's face-up look like" without recomputing per-shape tables.
+      * `up_axis` — body-local +Y rotated into world coords. Sign of
+        `elem(up_axis, 1)` is the cheap convex-up vs concave-up decode
+        for a cowrie, or "top face pointing which way" for a die.
+      * `sleeping` — rapier's own `is_sleeping()`. Ground-truth "at rest"
+        flag the solver gates on; prefer over hand-tuned velocity
+        thresholds where possible.
+    """
+
+    @type t :: %__MODULE__{
+            id: non_neg_integer(),
+            pos: {float(), float(), float()},
+            quat: {float(), float(), float(), float()},
+            linvel: {float(), float(), float()},
+            angvel: {float(), float(), float()},
+            speed: float(),
+            ang_speed: float(),
+            euler: {float(), float(), float()},
+            up_axis: {float(), float(), float()},
+            sleeping: boolean()
+          }
+
+    defstruct [
+      :id,
+      :pos,
+      :quat,
+      :linvel,
+      :angvel,
+      :speed,
+      :ang_speed,
+      :euler,
+      :up_axis,
+      :sleeping
+    ]
+  end
+
+  @doc """
+  Every body's full state as a list of `#{inspect(__MODULE__)}.BodyState`
+  structs — position, orientation, velocities, derived speeds, Tait-Bryan
+  angles, body-local +Y in world coords, and rapier's own `is_sleeping()`.
+
+  Prefer this over diffing consecutive `transforms/1` calls when you need
+  velocity or a rest signal: it reads directly from rapier's
+  `RigidBody::linvel`, `angvel`, and `is_sleeping`, which is the ground
+  truth the auto-sleep + solver themselves gate on. Handy in IEx over
+  dist for observing why a body is or isn't settling.
+  """
+  @spec body_states(world()) :: [BodyState.t()]
+  def body_states(_world), do: :erlang.nif_error(:nif_not_loaded)
+
   @typedoc "One collision-start/stop event."
   @type collision ::
           {body_id(), body_id(), :started | :stopped}
@@ -271,6 +340,16 @@ defmodule MobRapier.Physics do
   @spec transforms_in(String.t()) :: [transform()] | {:error, :not_found}
   def transforms_in(name) when is_binary(name) do
     with {:ok, world} <- Registry.lookup(name), do: transforms(world)
+  end
+
+  @doc """
+  Every body's full state (position, orientation, linvel, angvel,
+  derived speeds + Euler angles + local +Y, is_sleeping) in the named
+  world, or `{:error, :not_found}`.
+  """
+  @spec body_states_in(String.t()) :: [BodyState.t()] | {:error, :not_found}
+  def body_states_in(name) when is_binary(name) do
+    with {:ok, world} <- Registry.lookup(name), do: body_states(world)
   end
 
   @doc """

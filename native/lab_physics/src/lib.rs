@@ -24,34 +24,81 @@ use std::sync::Mutex;
 /// bites and sleep thresholds fire.
 const COLLIDER_DENSITY: f32 = 1000.0;
 
-/// Linear damping — bleeds off residual translational motion. 0.5 is
-/// "moderate air resistance"; a body loses ~40% of its linear speed
-/// per second while otherwise free.
-const LINEAR_DAMPING: f32 = 0.5;
+/// Linear damping — bleeds off residual translational motion. Tuned
+/// against telemetry: at 0.5 the contact solver's per-step energy
+/// injection (from shells stacked against each other) held a
+/// steady-state linear speed of ~50–180 mm/s. Damping increases
+/// linearly cut that in inverse proportion, so 3.0 puts it under the
+/// SLEEP_LINVEL floor.
+const LINEAR_DAMPING: f32 = 3.0;
 
-/// Angular damping — dice tumble but shouldn't spin forever. 2.0 kills
-/// rotational jitter within a second, which is what makes the
-/// settled-state detector actually converge.
-const ANGULAR_DAMPING: f32 = 2.0;
+/// Angular damping — dice tumble but shouldn't spin forever. Tuned
+/// against on-device telemetry (`MobRapier.Physics.body_states_in/1`):
+/// at 10.0, shells resting flat on the ground sleep cleanly but shells
+/// stacked on top of neighbours held a 2–5 rad/s residual and never
+/// crossed the sleep threshold. 20.0 pushes stacked residuals under
+/// SLEEP_ANGVEL too, at the small cost of dice looking a touch less
+/// bouncy mid-roll.
+const ANGULAR_DAMPING: f32 = 20.0;
+
+// ── Auto-sleep thresholds ───────────────────────────────────────────────
+//
+// Rapier's built-in auto-sleep is the canonical way to say "this body has
+// come to rest" — cheaper than reading transforms and diffing per tick,
+// and it also stops the solver from touching the body, which kills the
+// contact-driven micro-jitter two shells resting against each other
+// otherwise exchange forever.
+//
+// Rapier's defaults (0.4 m/s linear, 0.5 rad/s angular, 2.0 s dwell) are
+// tuned for room-scale bodies. Our shells are ~3 cm across and sit
+// against each other with a low-amplitude jitter that exceeds 0.5 rad/s
+// under the contact solver. Loosen the angular threshold, tighten the
+// linear one to match the tabletop scale, and shorten dwell so a shell
+// that briefly quiets down actually falls asleep instead of getting
+// woken by the next stray contact event.
+
+/// Linear velocity below which a body qualifies for sleep. Rapier
+/// multiplies this by the world's length_unit (default 1 m), so a
+/// value of 0.1 = 10 cm/s.
+const SLEEP_LINVEL: f32 = 0.1;
+
+/// Angular velocity below which a body qualifies for sleep, in rad/s.
+/// Contact solver injects ~1 rad/s of residual jitter into shell-on-shell
+/// resting contacts; 1.5 absorbs that without letting spinning dice
+/// stop early.
+const SLEEP_ANGVEL: f32 = 1.5;
+
+/// Dwell time (seconds) both thresholds must hold before rapier puts the
+/// body to sleep. Short so a briefly-quiet body actually sleeps before
+/// the next contact wakes it.
+const SLEEP_DWELL: f32 = 0.3;
 
 /// Collider friction — plastic-on-wood-ish; enough that a resting
 /// shell doesn't drift under gentle contact force from a neighbour.
 const COLLIDER_FRICTION: f32 = 0.7;
 
-/// Collider restitution — a small dice bounce, not a superball. 0.15
-/// lets the shake read as a shake without keeping the pile alive
-/// through repeated contact-driven energy retention.
-const COLLIDER_RESTITUTION: f32 = 0.15;
+/// Collider restitution — a small dice bounce, not a superball. Low
+/// enough that stacked shells don't perpetually re-inject energy into
+/// each other via the contact solver. Kept nonzero so the initial
+/// shake still reads as a shake rather than a mud drop.
+const COLLIDER_RESTITUTION: f32 = 0.05;
 
 /// Build a dynamic rigid body pre-configured for our
 /// centimetre-scale demos: translation set, damping applied so
 /// rapier's auto-sleep can catch it once the shake is over.
 fn build_dynamic_rb(x: f32, y: f32, z: f32) -> RigidBody {
-    RigidBodyBuilder::dynamic()
+    let mut rb = RigidBodyBuilder::dynamic()
         .translation(vector![x, y, z])
         .linear_damping(LINEAR_DAMPING)
         .angular_damping(ANGULAR_DAMPING)
-        .build()
+        .build();
+    // Tabletop-scale sleep thresholds — rapier's defaults are for
+    // room-scale bodies; see SLEEP_* constants above for why we override.
+    let activation = rb.activation_mut();
+    activation.normalized_linear_threshold = SLEEP_LINVEL;
+    activation.angular_threshold = SLEEP_ANGVEL;
+    activation.time_until_sleep = SLEEP_DWELL;
+    rb
 }
 
 /// Common tuning for every dynamic collider — density, friction,
@@ -467,6 +514,116 @@ fn transforms<'a>(env: Env<'a>, res: ResourceArc<WorldRes>) -> Term<'a> {
                 (t.x, t.y, t.z),
                 (r.i, r.j, r.k, r.w),
             ))
+        })
+        .collect();
+    list.encode(env)
+}
+
+/// Full per-body telemetry — the debug/observability surface for agents
+/// and IEx. Encoded as an `%MobRapier.Physics.BodyState{}` struct so it
+/// reads legibly in IEx and stays additive as new fields land.
+#[derive(rustler::NifStruct)]
+#[module = "MobRapier.Physics.BodyState"]
+struct BodyState {
+    id: u32,
+    // Position of the body's centre in world coordinates, metres.
+    pos: (f32, f32, f32),
+    // Orientation quaternion {qx, qy, qz, qw}.
+    quat: (f32, f32, f32, f32),
+    // Linear velocity in world coordinates, m/s.
+    linvel: (f32, f32, f32),
+    // Angular velocity in world coordinates, rad/s.
+    angvel: (f32, f32, f32),
+    // |linvel| — one-glance "is it translating".
+    speed: f32,
+    // |angvel| — one-glance "is it spinning".
+    ang_speed: f32,
+    // Intrinsic Z-Y-X Tait-Bryan angles (yaw about world +Y, pitch about
+    // world +Z after yaw, roll about world +X after pitch), radians.
+    // Yaw / pitch / roll are the intuitive "which way is it facing / how
+    // tilted is it" the settle-detection debugging cares about.
+    euler: (f32, f32, f32),
+    // Body-local +Y axis projected into world coords. For a die this is
+    // the top face when euler == 0; for a cowrie, +Y = dorsal (convex)
+    // side. Sign of the y component tells you convex-up vs concave-up
+    // without recomputing per-shape face tables.
+    up_axis: (f32, f32, f32),
+    // Rapier's own auto-sleep verdict — the ground-truth "at rest" flag
+    // the solver itself gates on. Prefer this over hand-tuned velocity
+    // thresholds.
+    sleeping: bool,
+}
+
+fn quat_to_euler(qx: f32, qy: f32, qz: f32, qw: f32) -> (f32, f32, f32) {
+    // Intrinsic Z-Y-X (yaw around Y, pitch around Z, roll around X)
+    // Tait-Bryan angles from a unit quaternion. Matches the aerospace
+    // ZYX convention rotated for a Y-up world.
+    let sin_pitch = 2.0 * (qw * qz - qx * qy);
+    let pitch = if sin_pitch.abs() >= 1.0 {
+        (std::f32::consts::FRAC_PI_2).copysign(sin_pitch)
+    } else {
+        sin_pitch.asin()
+    };
+    let yaw = (2.0 * (qw * qy + qx * qz)).atan2(1.0 - 2.0 * (qy * qy + qz * qz));
+    let roll = (2.0 * (qw * qx + qy * qz)).atan2(1.0 - 2.0 * (qx * qx + qz * qz));
+    (yaw, pitch, roll)
+}
+
+fn rotate_by_quat(v: (f32, f32, f32), q: (f32, f32, f32, f32)) -> (f32, f32, f32) {
+    // v' = q v q⁻¹, expanded out.
+    let (vx, vy, vz) = v;
+    let (qx, qy, qz, qw) = q;
+    let t2 = 2.0 * (qy * vz - qz * vy);
+    let t3 = 2.0 * (qz * vx - qx * vz);
+    let t4 = 2.0 * (qx * vy - qy * vx);
+    (
+        vx + qw * t2 + qy * t4 - qz * t3,
+        vy + qw * t3 + qz * t2 - qx * t4,
+        vz + qw * t4 + qx * t3 - qy * t2,
+    )
+}
+
+/// Reads every body's full state — position, orientation, linvel, angvel,
+/// derived speeds + Euler angles + body-local +Y in world, and rapier's
+/// own `is_sleeping()` flag.
+///
+/// Prefer this over diffing two `transforms/1` calls to infer velocity:
+/// it reads directly from rapier's `RigidBody::linvel()`, `angvel()`, and
+/// `is_sleeping()`, which is the ground truth the auto-sleep + solver
+/// themselves gate on. Also useful for face-up-style decoding without
+/// per-shape tables — the up_axis field is just the body's +Y in world
+/// coords, so its y component's sign says whether the die's top face is
+/// facing up or down.
+#[rustler::nif]
+fn body_states<'a>(env: Env<'a>, res: ResourceArc<WorldRes>) -> Term<'a> {
+    let world = res.inner.lock().unwrap();
+    let list: Vec<BodyState> = world
+        .bodies
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, handle)| {
+            let rb = world.rigid_bodies.get(*handle)?;
+            let t = rb.translation();
+            let r = rb.rotation();
+            let lv = rb.linvel();
+            let av = rb.angvel();
+            let quat = (r.i, r.j, r.k, r.w);
+            let euler = quat_to_euler(quat.0, quat.1, quat.2, quat.3);
+            let up_axis = rotate_by_quat((0.0, 1.0, 0.0), quat);
+            let speed = (lv.x * lv.x + lv.y * lv.y + lv.z * lv.z).sqrt();
+            let ang_speed = (av.x * av.x + av.y * av.y + av.z * av.z).sqrt();
+            Some(BodyState {
+                id: ix as u32,
+                pos: (t.x, t.y, t.z),
+                quat,
+                linvel: (lv.x, lv.y, lv.z),
+                angvel: (av.x, av.y, av.z),
+                speed,
+                ang_speed,
+                euler,
+                up_axis,
+                sleeping: rb.is_sleeping(),
+            })
         })
         .collect();
     list.encode(env)
